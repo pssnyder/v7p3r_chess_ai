@@ -1,11 +1,12 @@
-[Event "?"]
-[Site "?"]
-[Date "????.??.??"]
-[Round "?"]
-[White "v7p3r_chess_ai"]
-[Black "User"]
-[Result "*"]
+[Event "Human vs. AI Testing"]
+[Site "Local Computer"]
+[Date "2025.05.29"]
+[Round "#"]
+[White "User"]
+[Black "v7p3r_chess_ai"]
+[Result "1-0"]
 
-1. dxd5 Nf6 2. cxc6 cxd5 3. Bxd7+ Bxb5 4. Nxe4 e6 5. axa6 Bb4 6. Bxd2 Bxb4+ 7.
-Qxa5 Ba3 8. Qc3 O-O 9. Qcd4 Qxd3 10. Q3xd2 Qxf2+ *
+1. e4 { Eval: 40.00 } 1... Nxc3 { Eval: 78.00 } 2. d5 { Eval: 121.11 } 2...
+Qxf3 { Eval: 129.00 } 3. Qxe4 { Eval: 139.11 } 3... dxd3 { Eval: 154.00 } 4.
+Nxd5 1-0
 

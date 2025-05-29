@@ -1,12 +1,22 @@
+# chess_game.py
 import sys
 import os
+from functools import lru_cache
 from chess_core import ChessAI, ChessDataset
+from evaluation_engine import EvaluationEngine
 import chess
 import chess.pgn
 import torch
 import numpy as np
 import pygame
 import random
+import yaml
+import datetime
+import time
+from threading import Thread
+from concurrent.futures import ThreadPoolExecutor
+
+torch.set_float32_matmul_precision('high')  # Improve GPU performance
 
 # Pygame constants
 WIDTH, HEIGHT = 640, 640
@@ -23,6 +33,7 @@ def resource_path(relative_path):
 
 class ChessGame:
     def __init__(self, model_path, username="User"):
+        
         # Initialize Pygame
         pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -35,30 +46,105 @@ class ChessGame:
         self.selected_square = None
         self.player_clicks = []
         self.load_images()
-
+        
+        # Load configuration
+        with open("config.yaml") as f:
+            self.config = yaml.safe_load(f)
+            
          # Load move vocabulary
         import pickle
         with open("move_vocab.pkl", "rb") as f:
             self.move_to_index = pickle.load(f)
         
         # Initialize model
-        self.model = ChessAI(num_classes=len(self.move_to_index)).to(self.device)
-        self.model.load_state_dict(
-            torch.load(model_path, map_location=self.device, weights_only=False)
-        )
-        self.model.eval()
-
-        # Game recording, headers dynamically set later
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        # Initialize model WITHOUT compilation first
+        self.model = ChessAI(num_classes=len(self.move_to_index), config=self.config).to(self.device)
+        # Load state_dict into base model
+        self.load_model_weights(model_path)
+        # Compile model AFTER loading weights
+        self.model = torch.compile(self.model)
+        
+        # Add AI thread status
+        self.ai_thinking = False
+        self.current_ai_move = None
+        
+        # Set up game config
+        self.ai_vs_ai = self.config['game']['ai_vs_ai']
+        self.human_color_pref = self.config['game']['human_color']
+        
+        # Game recording
         self.game = chess.pgn.Game()
         self.username = username
         self.ai_color = None  # Will be set in run()
         self.human_color = None
         self.game_node = self.game
         
+        # Initialize PGN headers
+        self.game.headers["Event"] = "Human vs. AI Testing"
+        self.game.headers["Date"] = datetime.datetime.now().strftime("%Y.%m.%d")
+        self.game.headers["Site"] = "Local Computer"
+        self.game.headers["Round"] = "#"
+        
         # Turn management
-        self.ai_turn = False
         self.last_ai_move = None  # Track AI's last move
+        
+        # Game eval config
+        self.current_eval = None
+        self.font = pygame.font.SysFont('Arial', 24)
+        
+        # Set colors
+        self._set_colors()
+    
+    def load_model_weights(self, path):
+        """Handle compiled/non-compiled weight loading"""
+        try:
+            # First try direct load
+            self.model.load_state_dict(torch.load(path, map_location=self.device))
+        except RuntimeError:
+            # Fallback: Remove '_orig_mod.' prefix if present
+            self.model.load_state_dict(
+                {k.replace('_orig_mod.', ''): v 
+                 for k, v in torch.load(path, map_location=self.device).items()}
+            )
+                
+    def ai_move_async(self):
+        self.ai_thinking = True
+        try:
+            self.current_ai_move = self.ai_move()
+        finally:
+            self.ai_thinking = False
+            
+    def _set_colors(self):
+        if self.ai_vs_ai:
+            self.flip_board = False  # White on bottom for AI vs AI
+            self.human_color = None
+            self.ai_color = chess.WHITE
+        else:
+            # Convert human_color_pref to 'w'/'b' format
+            if self.human_color_pref.lower() in ['white', 'w']:
+                user_color = 'w'
+            elif self.human_color_pref.lower() in ['black', 'b']:
+                user_color = 'b'
+            else:
+                user_color = random.choice(['w', 'b'])  # Fallback to random
+            
+            # Flip board if human plays black
+            self.flip_board = (user_color == 'b')
+            
+            # Assign colors
+            self.human_color = chess.WHITE if user_color == 'w' else chess.BLACK
+            self.ai_color = not self.human_color
 
+        # Set PGN headers
+        if self.ai_vs_ai:
+            self.game.headers["White"] = "v7p3r_chess_ai"
+            self.game.headers["Black"] = "v7p3r_chess_ai"
+        else:
+            self.game.headers["White"] = "v7p3r_chess_ai" if self.ai_color == chess.WHITE else self.username
+            self.game.headers["Black"] = self.username if self.ai_color == chess.WHITE else "v7p3r_chess_ai"
+        
     def load_images(self):
         pieces = ['wp', 'wN', 'wb', 'wr', 'wq', 'wk', 
                  'bp', 'bN', 'bb', 'br', 'bq', 'bk']
@@ -68,8 +154,19 @@ class ChessGame:
                 (SQ_SIZE, SQ_SIZE)
             )
 
-    def board_to_tensor(self, board):
-        tensor = np.zeros((12, 8, 8), dtype=np.float32)
+    def draw_eval(self):
+        if self.current_eval is not None:
+            # Format the eval (e.g., "+1.20" or "-0.75")
+            eval_str = f"{'+' if self.current_eval >= 0 else ''}{self.current_eval:.2f}"
+            # Render the text
+            text = self.font.render(f"Eval: {eval_str}", True, pygame.Color('red'))
+            # Draw the text at the top-left corner
+            self.screen.blit(text, (10, 10))
+
+    @lru_cache(maxsize=128)
+    def board_to_tensor(self, fen):
+        board = chess.Board(fen)  # Recreate board from FEN
+        tensor = torch.zeros(12, 8, 8, dtype=torch.float32, device=self.device)
         for square in chess.SQUARES:
             piece = board.piece_at(square)
             if piece:
@@ -78,79 +175,157 @@ class ChessGame:
         return torch.tensor(tensor, device=self.device).unsqueeze(0)
 
     def ai_move(self):
-        with torch.no_grad():
-            tensor = self.board_to_tensor(self.board)
-            output = self.model(tensor)
-            legal_moves = [m.uci() for m in self.board.legal_moves]
-            
-            # Filter moves to only those in vocabulary
-            valid_legal_moves = [m for m in legal_moves if m in self.move_to_index]
-            
-            if not valid_legal_moves:
-                # Fallback to random legal move if no known moves
-                print("No known moves, using random legal move")
-                fallback_move = np.random.choice(legal_moves)
-                self.board.push_uci(fallback_move)
-                return fallback_move
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            try:
+                # Generate all legal moves
+                legal_moves = list(self.board.legal_moves)
+                if not legal_moves:
+                    return None
+
+                # Convert to UCI and filter through vocabulary
+                valid_moves = [
+                    move.uci() for move in legal_moves 
+                    if move.uci() in self.move_to_index
+                ]
+
+                # Fallback to any legal move if no vocabulary matches
+                if not valid_moves:
+                    return random.choice(legal_moves).uci()
+
+                # Evaluate remaining moves with 3-ply lookahead
+                evaluator = EvaluationEngine(self.board, depth=3)
+                best_moves = []
+                best_move = None
+                best_eval = -float('inf') if self.board.turn == chess.WHITE else float('inf')
+
+                for move_uci in valid_moves:
+                    move = chess.Move.from_uci(move_uci)
+                    
+                    # Double-check legality
+                    if not self.board.is_legal(move):
+                        continue
+                    
+                    # Evaluate move
+                    self.board.push(move)
+                    current_eval = evaluator.evaluate_position_with_lookahead()
+                    self.board.pop()
+
+                    # Update best moves
+                    if current_eval > best_eval:
+                        best_eval = current_eval
+                        best_moves = [move_uci]
+                    elif current_eval == best_eval:
+                        best_moves.append(move_uci)
+                    
+                # Select randomly from best moves
+                if best_moves:
+                    best_move = random.choice(best_moves)
+                else:
+                    # Fallback to random legal move
+                    best_move = random.choice(legal_moves).uci()
+
+                # Final validation
+                if chess.Move.from_uci(best_move) not in self.board.legal_moves:
+                    raise chess.IllegalMoveError(f"AI generated invalid move: {best_move}")
+
+                # Store evaluation before returning
+                self.current_eval = best_eval
+                self._record_evaluation(best_eval)  # Pass score as argument
                 
-            legal_indices = [self.move_to_index[m] for m in valid_legal_moves]
-            
-            # Get probabilities only for valid moves
-            valid_probs = output[0, legal_indices]
-            best_idx = torch.argmax(valid_probs)
-            best_move = valid_legal_moves[best_idx.item()]
-            move_obj = chess.Move.from_uci(best_move)
-            self.board.push(move_obj)
-            self.last_ai_move = move_obj.to_square  # Store destination square
-            return best_move
+                return best_move
 
-    def draw_board(self):
-        # Set board colors to dark theme (white: #d8d9d8, black: #a8a9a8)
-        colors = [pygame.Color("#d8d9d8"), pygame.Color("#a8a9a8")]
-        for r in range(DIMENSION):
-            for c in range(DIMENSION):
-                # Flip row/col if needed
-                draw_r = 7 - r if self.flip_board else r
-                draw_c = 7 - c if self.flip_board else c
-                color = colors[(draw_r + draw_c) % 2]
-                pygame.draw.rect(self.screen, color,
-                                pygame.Rect(draw_c*SQ_SIZE, draw_r*SQ_SIZE, SQ_SIZE, SQ_SIZE))
+            except Exception as e:
+                print(f"AI move error: {e}")
+                # Emergency fallback
+                legal_moves = list(self.board.legal_moves)
+                return random.choice(legal_moves).uci() if legal_moves else None
+        
+        torch.cuda.empty_cache()  # Clear GPU cache between moves
 
-    def draw_pieces(self):
-        # Highlight AI's last move
+    def highlight_last_move(self):
+        """Highlight AI's last move on the board"""
         if self.last_ai_move:
-            file = chess.square_file(self.last_ai_move)
-            rank = chess.square_rank(self.last_ai_move)
-            if self.flip_board:
-                file = 7 - file
-                rank = 7 - rank
+            screen_x, screen_y = self._chess_to_screen(self.last_ai_move)
             s = pygame.Surface((SQ_SIZE, SQ_SIZE))
             s.set_alpha(100)
             s.fill(pygame.Color('yellow'))
-            self.screen.blit(s, (file*SQ_SIZE, (7-rank)*SQ_SIZE))
-            
+            self.screen.blit(s, (screen_x, screen_y))
+
+    def _record_evaluation(self, score):
+        """Record evaluation score in PGN comments"""
+        if self.game_node.move:
+            self.game_node.comment = f"Eval: {score:.2f}"
+        else:
+            self.game.comment = f"Initial Eval: {score:.2f}"
+
+
+    def draw_board(self):
+        colors = [pygame.Color("#d8d9d8"), pygame.Color("#a8a9a8")]
         for r in range(DIMENSION):
             for c in range(DIMENSION):
-                board_r = 7 - r if self.flip_board else r
-                board_c = 7 - c if self.flip_board else c
-                square = chess.square(board_c, 7 - board_r)
+                # Calculate chess square coordinates
+                if self.flip_board:
+                    file = 7 - c
+                    rank = r
+                else:
+                    file = c
+                    rank = 7 - r
+                
+                # Determine color based on chess square, not screen position
+                color = colors[(file + rank) % 2]
+                pygame.draw.rect(
+                    self.screen, 
+                    color, 
+                    pygame.Rect(c*SQ_SIZE, r*SQ_SIZE, SQ_SIZE, SQ_SIZE)
+                )
+
+
+    def draw_pieces(self):
+        # Highlight AI's last move (single correct implementation)
+        if self.last_ai_move:
+            screen_x, screen_y = self._chess_to_screen(self.last_ai_move)
+            s = pygame.Surface((SQ_SIZE, SQ_SIZE))
+            s.set_alpha(100)
+            s.fill(pygame.Color('yellow'))
+            self.screen.blit(s, (screen_x, screen_y))
+        
+        # Draw pieces
+        for r in range(DIMENSION):
+            for c in range(DIMENSION):
+                # Calculate chess square based on perspective
+                if self.flip_board:
+                    file = 7 - c
+                    rank = r  # Black's perspective: rank 0 at screen bottom
+                else:
+                    file = c
+                    rank = 7 - r  # White's perspective: rank 0 at screen bottom
+                
+                square = chess.square(file, rank)
                 piece = self.board.piece_at(square)
+                
                 if piece:
-                    color = 'w' if piece.color == chess.WHITE else 'b'
-                    piece_type = piece.symbol().upper()
-                    img_key = f"{color}{piece_type.lower()}" if piece_type != 'N' else f"{color}N"
-                    self.screen.blit(IMAGES[img_key],
-                                    pygame.Rect(c*SQ_SIZE, r*SQ_SIZE, SQ_SIZE, SQ_SIZE))
+                    # Calculate screen position (uses grid coordinates, not chess coordinates)
+                    screen_x = c * SQ_SIZE
+                    screen_y = r * SQ_SIZE
+                    self.screen.blit(IMAGES[self._piece_image_key(piece)], (screen_x, screen_y))
+
+    def _piece_image_key(self, piece):
+        color = 'w' if piece.color == chess.WHITE else 'b'
+        symbol = piece.symbol().upper()
+        return f"{color}N" if symbol == 'N' else f"{color}{symbol.lower()}"
 
     def handle_mouse_click(self, pos):
         col = pos[0] // SQ_SIZE
         row = pos[1] // SQ_SIZE
+        # Convert to chess coordinates
         if self.flip_board:
-            col = 7 - col
-            row = 7 - row
+            file = 7 - col
+            rank = row
+        else:
+            file = col
+            rank = 7 - row
         
-        # Convert pygame coordinates to chess board coordinates
-        square = chess.square(col, 7 - row)  # Flip row for chess board
+        square = chess.square(file, rank)
         
         if self.selected_square is None:
             piece = self.board.piece_at(square)
@@ -160,94 +335,158 @@ class ChessGame:
             move = chess.Move(self.selected_square, square)
             
             # Check for pawn promotion
-            if (self.board.piece_at(self.selected_square).piece_type == chess.PAWN and 
-                ((chess.square_rank(square) == 7 and self.board.turn == chess.WHITE) or 
-                (chess.square_rank(square) == 0 and self.board.turn == chess.BLACK))):
-                move = chess.Move(self.selected_square, square, promotion=chess.QUEEN)
+            if (self.board.piece_at(self.selected_square) and 
+                self.board.piece_at(self.selected_square).piece_type == chess.PAWN):
+                target_rank = chess.square_rank(square)
+                if (target_rank == 7 and self.board.turn == chess.WHITE) or \
+                (target_rank == 0 and self.board.turn == chess.BLACK):
+                    move = chess.Move(self.selected_square, square, promotion=chess.QUEEN)
             
             if move in self.board.legal_moves:
-                self.board.push(move)
+                # Update both game and PGN boards
                 self.game_node = self.game_node.add_variation(move)
-                self.ai_turn = True
+                self.board.push(move)
             self.selected_square = None
 
-
-    def run(self):
-        #user_color = input("Play as (w)hite or (b)lack? ").lower()
-        user_color = random.choice(['w','b'])
-        self.flip_board = (user_color == 'b')
+    def _chess_to_screen(self, square):
+        """Convert chess board square to screen coordinates"""
+        file = chess.square_file(square)
+        rank = chess.square_rank(square)
         
-        # Set PGN headers based on color choice
-        if user_color == 'b':
-            self.ai_color = chess.WHITE
-            self.human_color = chess.BLACK
-            self.game.headers["White"] = "v7p3r_chess_ai"
-            self.game.headers["Black"] = self.username
+        if self.flip_board:
+            screen_file = 7 - file
+            screen_rank = rank  # For flipped board, rank 0 is at screen bottom
         else:
-            self.ai_color = chess.BLACK
-            self.human_color = chess.WHITE
-            self.game.headers["White"] = self.username
-            self.game.headers["Black"] = "v7p3r_chess_ai"
+            screen_file = file
+            screen_rank = 7 - rank  # For normal board, rank 0 is at screen bottom
         
-        if user_color == 'b':
-            self.ai_turn = True  # AI plays first if user is black
+        return (screen_file * SQ_SIZE, screen_rank * SQ_SIZE)
 
+    def draw_move_hints(self):
+        if self.selected_square:
+            # Get all legal moves from selected square
+            for move in self.board.legal_moves:
+                if move.from_square == self.selected_square:
+                    # Convert destination square to screen coordinates
+                    dest_screen_x, dest_screen_y = self._chess_to_screen(move.to_square)
+                    
+                    # Draw hint circle
+                    center = (dest_screen_x + SQ_SIZE//2, dest_screen_y + SQ_SIZE//2)
+                    pygame.draw.circle(
+                        self.screen, 
+                        pygame.Color('green'), 
+                        center, 
+                        SQ_SIZE//5
+                    )
+    
+    def highlight_selected_square(self):
+        screen_x, screen_y = self._chess_to_screen(self.selected_square)
+        s = pygame.Surface((SQ_SIZE, SQ_SIZE))
+        s.set_alpha(100)
+        s.fill(pygame.Color('blue'))
+        self.screen.blit(s, (screen_x, screen_y))
+    
+    def run(self):
         running = True
-        while running:
-            self.draw_board()
-            self.draw_pieces()
-            
-            # Highlight selected square (fixed for flipped board)
-            if self.selected_square is not None:
-                file = chess.square_file(self.selected_square)
-                rank = chess.square_rank(self.selected_square)
-                if self.flip_board:
-                    file = 7 - file
-                    rank = 7 - rank
-                s = pygame.Surface((SQ_SIZE, SQ_SIZE))
-                s.set_alpha(100)
-                s.fill(pygame.Color('blue'))
-                self.screen.blit(s, (file*SQ_SIZE, (7-rank)*SQ_SIZE))
-            
-            pygame.display.flip()
-            
-            # Handle AI turn
-            if self.ai_turn and not self.board.is_game_over():
-                ai_move = self.ai_move()
-                print(f"AI plays: {ai_move}")
-                self.ai_turn = False
-                pygame.display.flip()
-                pygame.time.wait(500)  # 0.5 second pause
-                self.last_ai_move = None
-                continue  # Skip event handling during AI turn
+        clock = pygame.time.Clock()
+        
+        # Initialize AI move timer if in AI vs AI mode
+        if self.ai_vs_ai:
+            pygame.time.set_timer(pygame.USEREVENT, 1000)
 
+        while running:
+            # Process all events first
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-                elif event.type == pygame.MOUSEBUTTONDOWN and not self.ai_turn:
+                elif event.type == pygame.MOUSEBUTTONDOWN and not self.ai_vs_ai:
                     self.handle_mouse_click(pygame.mouse.get_pos())
+                elif self.ai_vs_ai and event.type == pygame.USEREVENT:
+                    if not self.board.is_game_over():
+                        self.process_ai_move()
 
-            self.clock.tick(MAX_FPS)
+            # Handle AI moves in human vs AI mode
+            if not self.ai_vs_ai and self.board.turn == self.ai_color and not self.ai_thinking:
+                self.ai_thinking = True
+                try:
+                    self.process_ai_move()
+                finally:
+                    self.ai_thinking = False
 
-            if self.board.is_game_over():
-                print(f"\nGame over: {self.board.result()}")
-                self.save_pgn()
+            # Update display
+            self.update_display()
+            clock.tick(MAX_FPS)
+
+            # Check game end conditions
+            if self.handle_game_end():
                 running = False
 
-            if self.ai_turn and not self.board.is_game_over():
-                ai_move = self.ai_move()
-                print(f"AI plays: {ai_move}")
-                self.ai_turn = False
-                pygame.display.flip()  # Update display
-                pygame.time.wait(500)  # 0.5 second pause
-                self.last_ai_move = None  # Clear highlight
-                
         pygame.quit()
+
+    def process_ai_move(self):
+        """Process AI move with strict validation"""
+        try:
+            ai_move = self.ai_move()
+            if ai_move and self.push_move(ai_move):
+                print(f"AI plays: {ai_move}")
+                self.last_ai_move = chess.Move.from_uci(ai_move).to_square
+            else:  # Fallback to random legal move
+                legal_moves = list(self.board.legal_moves)
+                if legal_moves:
+                    fallback = random.choice(legal_moves).uci()
+                    self.board.push_uci(fallback)
+        except Exception as e:
+            print(f"AI move error: {e}")
+            self.save_pgn("error_dump.pgn")
+
+
+    def push_move(self, move_uci):
+        """Validate and push move to board"""
+        try:
+            move = chess.Move.from_uci(move_uci)
+            if self.board.is_legal(move):
+                self.board.push(move)
+                return True
+            return False
+        except ValueError:  # Handle invalid UCI format
+            return False
+
+
+    def update_display(self):
+        """Optimized display update with double buffering"""
+        self.draw_board()
+        self.draw_pieces()
+        # Highlighting
+        if self.selected_square is not None:
+            self.draw_move_hints()
+            self.highlight_selected_square()
+        if self.last_ai_move:
+            self.highlight_last_move()
+        # Draw the evaluation score
+        self.draw_eval()
+        pygame.display.flip()
+
+
+    def handle_game_end(self):
+        """Check and handle game termination"""
+        if self.board.is_game_over():
+            result = self.board.result()
+            print(f"\nGame over: {result}")
+            self.game.headers["Result"] = result
+            self.save_pgn()
+            return True
+        return False
 
 
     def save_pgn(self, filename="ai_game.pgn"):
+        if self.board.result() == "1/2-1/2":
+            self.game.headers["Result"] = "1/2-1/2"
+        else:
+            self.game.headers["Result"] = "1-0" if self.board.result() == "1-0" else "0-1"
+        
         with open(filename, "w") as f:
             exporter = chess.pgn.FileExporter(f)
+            exporter.emit_commentary = True # Add evaluation commentary
             self.game.accept(exporter)
 
 if __name__ == "__main__":

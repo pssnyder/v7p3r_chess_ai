@@ -1,0 +1,12 @@
+[Event "Human vs. AI Testing"]
+[Site "Local Computer"]
+[Date "2025.05.28"]
+[Round "1"]
+[White "Pat"]
+[Black "v7p3r_chess_ai"]
+[Result "1-0"]
+
+1. e4 e5 2. Nc3 Nc6 3. Bc4 Bc5 4. d3 d6 5. Nf3 Nf6 6. Bg5 O-O 7. O-O Bg4 8. h3
+Bxf3 9. Qxf3 Qd7 10. Bxf6 Nb4 11. Qg3 Nxc2 12. Rac1 Nd4 13. Nd5 c6 14. Ne7+ Kh8
+15. Qxg7# *
+

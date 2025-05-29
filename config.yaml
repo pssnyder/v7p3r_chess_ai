@@ -1,10 +1,18 @@
 training:
   batch_size: 256
   learning_rate: 0.001
-  epochs: 10
+  epochs: 15
   weight_decay: 0.0001
+  rule_weight: 0.6  # Adjust influence of rule-based evaluation
+
+game:
+  ai_vs_ai: false  # New config option
+  human_color: random  # random/white/black
 
 analysis_rules:
   preferred_openings: ["e4", "d4"]
   avoid_early_queen: true
   max_pawn_advance: 3
+
+lichess_api:
+  token_id: "lip_cQuKfzQLhkKlPTILaVd2"

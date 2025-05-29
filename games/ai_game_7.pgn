@@ -1,0 +1,16 @@
+[Event "Human vs. AI Testing"]
+[Site "Local Computer"]
+[Date "2025.05.29"]
+[Round "#"]
+[White "v7p3r_chess_ai"]
+[Black "Pat"]
+[Result "0-1"]
+
+{ Initial Eval: 13.00 } 1. dxd5 { Eval: 53.00 } 1... Nf6 { Eval: 84.11 } 2.
+Nxd5 { Eval: 14.82 } 2... Nxf6 { Eval: 24.82 } 3. Nxd5 { Eval: 24.82 } 3...
+Nxb4 { Eval: 23.70 } 4. Bxf5 { Eval: 23.70 } 4... e6 { Eval: 14.82 } 5. fxe6
+{ Eval: 1.55 } 5... c6 { Eval: 11.55 } 6. Nxc2 { Eval: 17.43 } 6... Nxa1
+{ Eval: 12.08 } 7. Qxa5 { Eval: 10000.00 } 7... Qxa2 { Eval: 10.95 } 8. Qaxc2
+{ Eval: 10.95 } 8... Bb4 { Eval: 0.95 } 9. Bxc3 { Eval: -2.23 } 9... Qxd2+
+{ Eval: 10000.00 } 10. Qxe1 0-1
+

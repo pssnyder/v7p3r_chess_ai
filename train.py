@@ -1,3 +1,4 @@
+# train.py
 from chess_core import *
 import torch
 import torch.nn as nn
@@ -13,9 +14,16 @@ with open("config.yaml") as f:
 
 # Calculate move weights based on frequency
 def calculate_move_weights(moves_list, num_classes):
-    counts = np.bincount(moves_list, minlength=num_classes)
-    weights = 1.0 / (np.sqrt(counts) + 1e-6)  # Inverse sqrt frequency
+    # Add depth-based weighting
+    depth_weights = np.linspace(1.0, 0.7, num=3)  # Weight recent moves higher
+    weighted_counts = np.zeros(num_classes)
+    
+    for idx, move in enumerate(moves_list[-3:]):  # Consider last 3 moves
+        weighted_counts[move] += depth_weights[idx]
+    
+    weights = 1.0 / (np.sqrt(weighted_counts) + 1e-6)
     return torch.tensor(weights / weights.max(), dtype=torch.float32)
+
 
 # Initialize move-to-index mapping
 def create_move_vocab(dataset):
@@ -25,7 +33,7 @@ def train_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Load data and create vocabulary
-    dataset = ChessDataset("games.pgn", "v7p3r")
+    dataset = ChessDataset("training_data/games.pgn", "v7p3r")
     move_to_index = create_move_vocab(dataset)
     num_classes = len(move_to_index)
     
@@ -46,7 +54,7 @@ def train_model():
         pin_memory=True
     )
     
-    model = ChessAI(num_classes).to(device)
+    model = ChessAI(num_classes, config).to(device)
     criterion = nn.CrossEntropyLoss(
         weight=calculate_move_weights(np.array(dataset.moves), num_classes)
     )
@@ -71,7 +79,8 @@ def train_model():
             
         print(f"Epoch {epoch+1} Loss: {loss.item():.4f}")
         
-    torch.save(model.state_dict(), "v7p3r_chess_ai_model.pth")
+    torch.save(model.state_dict(), "v7p3r_chess_ai_model.pth")  # Save BEFORE compiling
+    model = torch.compile(model)  # Compile AFTER saving
 
 if __name__ == "__main__":
     train_model()

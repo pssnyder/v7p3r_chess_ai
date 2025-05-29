@@ -1,0 +1,15 @@
+[Event "Human vs. AI Testing"]
+[Site "Local Computer"]
+[Date "2025.05.28"]
+[Round "#"]
+[White "v7p3r_chess_ai"]
+[Black "User"]
+[Result "0-1"]
+
+{ Eval: 1005.00 } 1. dxd5 { Eval: 1012.00 } 1... Nc6 { Eval: 1010.00 } 2. exe5
+{ Eval: 10000.00 } 2... exe4 { Eval: 10000.00 } 3. fxf5 { Eval: 10000.00 } 3...
+a6 { Eval: 10000.00 } 4. Bxd6 { Eval: 10000.00 } 4... Bxf4 { Eval: 10000.00 }
+5. Qxg5 { Eval: 10000.00 } 5... Ne5 { Eval: 10000.00 } 6. Nxc4
+{ Eval: 10000.00 } 6... e3 { Eval: 10000.00 } 7. exd2 { Eval: 10000.00 } 7...
+Bxd2+ { Eval: 10000.00 } 8. Qg3 0-1
+
