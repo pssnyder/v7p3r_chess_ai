@@ -1,10 +1,84 @@
-training:
-  batch_size: 256
-  learning_rate: 0.001
-  epochs: 10
-  weight_decay: 0.0001
+# config.yaml
+# Configuration for Reinforcement Learning Chess AI
 
+# Game settings
+game:
+  ai_vs_ai: false             # Set to true for AI vs AI matches
+  human_color: random         # Options: white, black, random
+
+# AI settings
+ai:
+  search_depth: 2              # Minimax search depth (1-5 recommended)
+  use_lookahead: true          # Enable minimax with alpha-beta pruning
+  use_quiescence: false        # 
+  move_time_limit: 5.0         # Maximum time per move in seconds
+  move_ordering: false         # Enable move ordering for better pruning
+
+# Training settings
+training:
+  batch_size: 32               # Reduced for RL training
+  learning_rate: 0.001         # Learning rate for optimizer
+  epochs: 100                  # Number of training epochs
+  weight_decay: 0.0001         # L2 regularization
+  exploration_rate: 0.1        # Exploration rate for move selection
+  games_per_iteration: 100     # Number of self-play games per training iteration
+  update_target_frequency: 10  # How often to update target network
+
+# Evaluation rewards and penalties for RL training
+evaluation:
+  # Material values and bonuses
+  checkmate_bonus: 1000.0        # Bonus for checkmate threats
+  repetition_penalty: -50.0     # Penalty for threefold repetition
+  center_control_bonus: 0.5      # Bonus per center square controlled
+  knight_activity_bonus: 0.1    # Multiplier per square attacked by knight
+  bishop_activity_bonus: 0.15   # Multiplier per square attacked by bishop
+  king_safety_bonus: 0.3        # Bonus per pawn in king shield
+  king_threat_penalty: -0.5     # Penalty for being checked
+  undeveloped_penalty: -0.2     # Penalty for undeveloped pieces
+  check_bonus: 10               # Bonus for giving check
+  in_check_penalty: -10         # Penalty for being in check
+  capture_bonus: 3              # Base bonus for captures
+  castling_bonus: 5             # Bonus for castling rights
+  en_passant_bonus: 1           # Bonus for en passant opportunity
+  pawn_promotion_bonus: 5       # Bonus for pawn promotion
+  passed_pawn_bonus: 0.25       # Bonus for passed pawns
+  hanging_piece_bonus: 2        # Bonus for attacking hanging pieces
+  trapped_piece_penalty: -5     # Penalty for trapped pieces
+  piece_development_bonus: 2    # Bonus for developing minor pieces
+  piece_development_penalty: -0.5  # Penalty for under-developed minor pieces
+  piece_activity_bonus: 0.1     # General piece activity bonus
+  knight_pair_bonus: 1          # Bonus for having knight pair
+  knight_vision_penalty: -0.25  # Penalty for restricted knight mobility
+  pawn_advancement_bonus: 0.25   # Bonus for advanced pawns
+  rook_development_penalty: 0.2  # Penalty for undeveloped rooks
+  castling_protection_bonus: 3   # Bonus for castling protection
+  castling_protection_penalty: -6  # Penalty for exposed king
+  pst_weight: 1.2               # Piece-square table weight
+  material_weight: 0.8          # Material evaluation weight
+  bishop_vision_bonus: 1        # Bonus for bishop mobility
+  
+  # Advanced evaluation features
+  enable_piece_square_tables: false  # Use piece-square tables for positional eval
+  enable_pawn_structure: true        # Evaluate pawn structure
+  enable_king_safety_detailed: true  # Detailed king safety evaluation
+
+# Analysis rules for move preference
 analysis_rules:
-  preferred_openings: ["e4", "d4"]
-  avoid_early_queen: true
-  max_pawn_advance: 3
+  preferred_openings: ["e4", "d4", "Nf3", "c4"]  # Preferred opening moves
+  avoid_early_queen: true                        # Avoid early queen development
+  max_pawn_advance: 3                           # Maximum pawn advancement in opening
+
+# Performance settings
+performance:
+  max_moves_evaluated: 50      # Limit moves evaluated per position
+  use_transposition_table: false  # Cache evaluations (not implemented yet)
+  parallel_evaluation: false      # Parallel move evaluation (not implemented yet)
+  batch_inference: true           # Use batch inference for neural network
+
+# Debug settings
+debug:
+  print_evaluations: false     # Print evaluation details to console
+  save_evaluation_log: false   # Save detailed evaluation log
+  show_thinking_time: true     # Display time taken for move calculation
+  verbose_training: true       # Show detailed training progress
+  save_game_pgns: true         # Save training games as PGN files
